@@ -16,10 +16,39 @@ For the latest CI release, see [releases](https://github.com/jqssun/android-line
 
 - For first time installs, download `UTM-VM-lineage-*.zip` from releases and unzip.
 
+- To run via `qemu-system` directly, see [Development](#development).
+
 - To install an update package, boot into **LineageOS Recovery**, select **Apply update**, then **Apply from ADB**. Use [`lineage_virtio_arm64only-ota.zip`](https://github.com/jqssun/android-lineage-qemu/releases/latest/download/lineage_virtio_arm64only-ota.zip) from releases if updating to a new LineageOS build, or use your own update package. On the host, run
 ```shell
 adb sideload [lineage_virtio_arm64only-ota.zip|*.zip]
 ```
+
+### Generic System Images (GSI)
+
+[These `arm64` virtual machine images are typically compatible with GSIs of an equivalent or later Android version.](https://wiki.lineageos.org/libvirt-qemu#run-generic-system-images-inside-the-virtual-machine) First, download and unzip the image archive from [Generic System Image releases](https://developer.android.com/topic/generic-system-image/releases) to obtain `system.img`. You generally want `{gsi_gms,aosp}_arm64*.zip` archives, but other GSI compatible Android/ALOS images may also be supported. Once you have the image, you can either [try running it directly](#using-gsi-directly) or [flash it to the virtual machine's partition permanently](#installing-gsi-to-virtual-machine-permanently).
+
+#### Using GSI Directly
+
+If you are using UTM, [import the image as the third `VirtIO Drive`](https://docs.getutm.app/settings-qemu/drive/drive/#importing) by going to **Drives**, select **New...**, **Import**, then locate the GSI `system.img` file, and **Save**. For `virt-manager`, use **Add Hardware**, then **Storage** to attach the system image. Alternatively if using `qemu-system-aarch64`, append the `-drive` option to add the image directly.
+```shell
+-device virtio-blk-pci,drive=vdc \
+-drive file=$SYSTEM_IMG,if=none,id=vdc,discard=unmap,detect-zeroes=unmap
+```
+
+#### Installing GSI to Virtual Machine Permanently
+
+Flash the GSI in `fastbootd` by booting into **LineageOS Recovery**. Select **Advanced**, then **Enter fastboot**. On the host, run
+```shell
+fastboot -s tcp:$HOST_IP delete-logical-partition product
+fastboot -s tcp:$HOST_IP delete-logical-partition system_ext
+fastboot -s tcp:$HOST_IP flash system $SYSTEM_IMG
+```
+
+#### Using GSI
+
+Unless this is the first boot of the virtual machine, you must perform a factory reset before booting into the GSI. If you run into issues, you can set `SELinux` to permissive mode at boot by selecting **Settings**, **SELinux**, then **Permissive**. To boot the GSI, select **Advanced options**, then **Boot GSI from /dev/block/vdc with LineageOS \* (Kernel version \*)**.
+
+If you experience any input issues when using a GSI in UTM, you should use **View**, **Enter Full Screen**, and re-enable **Capture input devices** mode. [You can exit this mode by pressing `⌃`+`⌥` at the same time.](https://docs.getutm.app/preferences/macos/#input)
 
 ### Android Debug Bridge (ADB)
 
@@ -34,7 +63,7 @@ If running `adb` on the same host, no further configuration is needed and the de
 
 ### Bypassing Signature Verification in Recovery
 
-[LineageOS Recovery supports sideloading unsigned update files.](https://review.lineageos.org/c/LineageOS/android_bootable_recovery/+/368223) To allow this, you need to install a non-release version of the recovery image. To put the device in `fastbootd`, boot into **LineageOS Recovery**, select **Advanced**, then **Enter fastboot**. On the host, download [`recovery-userdebug.img`](https://github.com/jqssun/android-lineage-qemu/releases/latest/download/recovery-userdebug.img) from releases and run
+[LineageOS Recovery supports sideloading unsigned update files.](https://review.lineageos.org/c/LineageOS/android_bootable_recovery/+/368223) To allow this, you need to install a non-release version of the recovery image. To put the virtual machine in `fastbootd`, boot into **LineageOS Recovery**, select **Advanced**, then **Enter fastboot**. On the host, download [`recovery-userdebug.img`](https://github.com/jqssun/android-lineage-qemu/releases/latest/download/recovery-userdebug.img) from releases and run
 ```shell
 fastboot -s tcp:$HOST_IP flash recovery recovery-userdebug.img
 ```
@@ -57,6 +86,96 @@ fastboot -s tcp:$HOST_IP flash boot magisk_patched*.img
 This repository provides the build script to compile LineageOS on the latest Ubuntu, and assumes you already have root access via `sudo` with `apt` and `git` in your `$PATH`. It may also work with other Linux distributions, but these configurations are not tested.
 
 To build these images yourself via CI (e.g. GitHub Actions), fork this repository, then go to **Actions**, select **Build**, and select **Run workflow**. Under **Runner**, you can either use a GitHub-hosted runner by entering `ubuntu-latest`, or `self-hosted` for your own hardware.
+
+## Development
+
+To run the virtual machine via `qemu-system-aarch64`, you may use these commands in the directory containing the extracted `LineageOS_on_arm64.utm` from `UTM-VM-lineage-*.zip`. This assumes you are using `qemu` installed via `Homebrew`, `nix-darwin` (macOS), or your distribution's repositories (Linux).
+
+Run the following to set the platform-agnostic `QEMU_OPTS` first, and then apply the platform-specific [`DARWIN_QEMU_OPTS`](#setting-darwin_qemu_opts-for-macos) or [`LINUX_QEMU_OPTS`](#setting-linux_qemu_opts-for-linux) accordingly before starting the virtual machine via `qemu-system-aarch64`.
+
+```shell
+read -r -d '' QEMU_OPTS << EOM
+    -device virtio-blk-pci,drive=vda,bootindex=0 \
+    -device virtio-blk-pci,drive=vdb,bootindex=1 \
+    -drive if=pflash,unit=1,file=./LineageOS_on_arm64.utm/Data/efi_vars.fd \
+    -drive file=./LineageOS_on_arm64.utm/Data/vda.qcow2,if=none,id=vda,discard=unmap,detect-zeroes=unmap \
+    -drive file=./LineageOS_on_arm64.utm/Data/vdb.qcow2,if=none,id=vdb,discard=unmap,detect-zeroes=unmap \
+    -device virtio-net-pci,netdev=net0 \
+    -netdev user,id=net0,hostfwd=tcp:0.0.0.0:5555-:5555,hostfwd=tcp:0.0.0.0:5554-:5554 \
+    -device usb-tablet,bus=usb-bus.0 \
+    -device usb-mouse,bus=usb-bus.0 \
+    -device usb-kbd,bus=usb-bus.0 \
+    -device virtio-serial \
+    -device virtio-rng-pci \
+    -chardev stdio,mux=on,id=charconsole \
+    -serial chardev:charconsole
+EOM
+```
+
+### Running on macOS
+
+#### Setting `DARWIN_QEMU_OPTS` for macOS
+```shell
+AAVMF_CODE=$(find /opt/homebrew/Cellar/qemu /nix/store/*-qemu-*/share -name 'edk2-aarch64-code.fd' 2>/dev/null)
+read -r -d '' DARWIN_QEMU_OPTS << EOM
+    -device virtio-gpu-pci \
+    -display cocoa,show-cursor=on \
+    -device intel-hda \
+    -device hda-output,audiodev=audio0 \
+    -audiodev coreaudio,id=audio0 \
+    -drive if=pflash,unit=0,file=$AAVMF_CODE,file.locking=off,format=raw,readonly=on \
+    -device nec-usb-xhci,id=usb-bus \
+    -device qemu-xhci,id=usb-controller-0 \
+    $QEMU_OPTS
+EOM
+```
+- For faster Hypervisor framework (HVF) acceleration, use:
+```shell
+qemu-system-aarch64 \
+    -machine virt \
+    -m 2048 \
+    -accel hvf \
+    $DARWIN_QEMU_OPTS
+```
+- For slower cross-architecture emulation, use:
+```shell
+qemu-system-aarch64 \
+    -machine virt \
+    -cpu max,pauth-impdef=on -m 2048 \
+    -accel tcg,tb-size=1024,thread=multi \
+    $DARWIN_QEMU_OPTS
+```
+
+### Running on Linux
+
+#### Setting `LINUX_QEMU_OPTS` for Linux
+
+```shell
+AAVMF_CODE=$(find /usr/share/ -name 'AAVMF_CODE.fd' 2>/dev/null)
+read -r -d '' LINUX_QEMU_OPTS << EOM
+    -device virtio-gpu-pci -display sdl,gl=off \
+    -drive if=pflash,unit=0,file=$AAVMF_CODE,file.locking=off,format=raw,readonly=on \
+    -device usb-ehci,id=usb-bus \
+    $QEMU_OPTS
+EOM
+```
+If your device supports OpenGL acceleration, use `-device virtio-gpu-gl-pci -display sdl,gl=on` instead of `-device virtio-gpu-pci -display sdl,gl=off`.
+- For faster KVM acceleration via Virtualization Host Extensions (VHEs), use:
+```shell
+qemu-system-aarch64 \
+    -machine virt,gic-version=3,highmem=off \
+    -cpu host -m 2048 \
+    -accel kvm \
+    $LINUX_QEMU_OPTS
+```
+- For slower cross-architecture emulation, use:
+```shell
+qemu-system-aarch64 \
+    -machine virt \
+    -cpu max,pauth-impdef=on -m 2048 \
+    -accel tcg,tb-size=1024,thread=multi \
+    $LINUX_QEMU_OPTS
+```
 
 ## Credits
 
